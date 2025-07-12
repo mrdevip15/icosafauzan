@@ -1,0 +1,32 @@
+============================================================
+THERMODYNAMIC ANALYSIS REPORT
+2D Ising Model with 8-State Potts Spins
+============================================================
+
+CRITICAL TEMPERATURE ANALYSIS:
+----------------------------------------
+Binder Cumulant Method:    Tc = 0.000000
+Susceptibility Peak:       Tc = 0.000000
+Heat Capacity Peak:        Tc = 1.220000
+Average Critical Temp:      Tc = 0.406667
+
+CRITICAL EXPONENTS:
+----------------------------------------
+Magnetization exponent beta: 0.1250
+Susceptibility exponent gamma: 1.7500
+Theoretical beta (2D Ising):  0.125
+Theoretical gamma (2D Ising):  1.75
+
+SYSTEM PARAMETERS:
+----------------------------------------
+Lattice size: 8×8
+Spin states: 8 (icosahedral)
+Temperature range: 0.000 - 2.000
+Number of data points: 201
+
+THERMODYNAMIC QUANTITIES:
+----------------------------------------
+Maximum magnetization: 1.0000
+Maximum susceptibility: inf
+Maximum heat capacity: 12.7372
+Energy range: -2.0000 to -0.4283

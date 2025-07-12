@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 void period();
@@ -15,51 +16,56 @@ extern void ranset(int, int []);
 extern void rnd(int [], int, int []);
 
 #define PI 3.141592653589793
-//#define nx 8
-//#define ny 8
-#define nx 8
-#define ny 8
-#define nla (nx*ny)
-
 #define iqq 8
-
 #define irbit 2281
 #define mask 017777777777
-
-//#define update "me"
 #define update "wolff"
 
-  int isp[nla];
-  int nn[4*nla];
-  int n2[2*nla],n4[2*nla];
-  double mx[iqq],my[iqq],mz[iqq];
-  double rule[iqq][iqq];
-  int rr[iqq][15];
-  int nmcs1, nmcs2;
-  double cosx[nx], sinx[nx], cosy[ny], siny[ny];
-  double beta;
-  double fm[8];
+int nx, ny, nla;
 
-  int ir[4*nla], irsd1[irbit]; 
+int *isp;
+int *nn;
+int *n2;
+int *n4;
+double mx[iqq], my[iqq], mz[iqq];
+double rule[iqq][iqq];
+int rr[iqq][15];
+int nmcs1, nmcs2;
+double *cosx, *sinx, *cosy, *siny;
+double beta;
+double fm[8];
 
-//main(void) {
+int *ir;
+int *irsd1;
+
 int main() {
     int iri, i, itemp;
     double fnla2, fnla4, temp;
     double fm2,fm4,fg2,fg4,fe1,fe2,cv;
     double ff,corr;
+    int input_nx, input_ny;
 
-//    const double tstart=0.3, tunit=0.02, tnumber=30;
-//    const double tstart=0.534, tunit=0.002, tnumber=21;
-    const double tstart=0.300, tunit=0.005, tnumber=61;
+    // Read nx, ny, nmcs1, nmcs2, iri from input
+    scanf("%d %d %d %d %d", &nx, &ny, &nmcs1, &nmcs2, &iri);
+    nla = nx * ny;
+    fnla2 = nla * nla;
+    fnla4 = fnla2 * fnla2;
 
-    fnla2=nla*nla;
-    fnla4=fnla2*fnla2;
+    printf("#%12d %12d %12d %12d %12d\n", nx, ny, nmcs1, nmcs2, iri);
 
-    scanf("%d %d %d",&nmcs1,&nmcs2,&iri);
-    printf("#%12d %12d %12d\n",nmcs1,nmcs2,iri);
+    // Dynamically allocate arrays
+    isp = (int*)malloc(nla * sizeof(int));
+    nn = (int*)malloc(4 * nla * sizeof(int));
+    n2 = (int*)malloc(2 * nla * sizeof(int));
+    n4 = (int*)malloc(2 * nla * sizeof(int));
+    cosx = (double*)malloc(nx * sizeof(double));
+    sinx = (double*)malloc(nx * sizeof(double));
+    cosy = (double*)malloc(ny * sizeof(double));
+    siny = (double*)malloc(ny * sizeof(double));
+    ir = (int*)malloc(4 * nla * sizeof(int));
+    irsd1 = (int*)malloc(irbit * sizeof(int));
 
-    ranset(iri,irsd1);
+    ranset(iri, irsd1);
     for(i = 0; i<=irbit-1; i++){
       irsd1[i] &= mask;
     }
@@ -70,9 +76,9 @@ int main() {
     rset();
     sineset();
 
-    for(itemp=1; itemp<=tnumber; itemp++)
+    for(itemp=1; itemp<=201; itemp++)
     {
-      temp=tstart+tunit*(itemp-1);
+      temp=0.0+0.01*(itemp-1);
       beta=1/temp;
       spinset();
 
@@ -90,6 +96,12 @@ int main() {
       printf("%13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e\n",
               temp,fm2,fm4,fg2,fg4,fe1,cv,corr);
     }
+
+    // Free allocated memory
+    free(isp); free(nn); free(n2); free(n4);
+    free(cosx); free(sinx); free(cosy); free(siny);
+    free(ir); free(irsd1);
+    return 0;
 }
 
 void period()
