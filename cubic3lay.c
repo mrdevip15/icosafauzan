@@ -22,7 +22,7 @@ extern void rnd(int [], int, int []);
 #define mask 017777777777
 #define update "wolff"
 
-int nx, ny, nla;  // Fixed at 4 layers
+int nx, ny, nla;  // Fixed at 3 layers
 
 int *isp;
 int *nn;
@@ -46,10 +46,10 @@ int main() {
     double ff,corr;
     int input_nx, input_ny;
 
-    // Read nx, ny, nmcs1, nmcs2, iri from input (fixed at 4 layers)
+    // Read nx, ny, nmcs1, nmcs2, iri from input (fixed at 3 layers)
     scanf("%d %d %d %d %d", &nx, &ny, &nmcs1, &nmcs2, &iri);
-    int nz = 4;  // Fixed at 4 layers
-    nla = nx * ny * nz;  // Total sites = nx * ny * 4
+    int nz = 3;  // Fixed at 3 layers
+    nla = nx * ny * nz;  // Total sites = nx * ny * 3
     fnla2 = nla * nla;
     fnla4 = fnla2 * fnla2;
 
@@ -127,7 +127,7 @@ int main() {
 void period()
 /*
        periodic boundary conditions for quasi-3d system
-       system size = nx*ny*nz (4 layers)
+       system size = nx*ny*nz (3 layers)
        Each layer is 2D with periodic boundary conditions
        Inter-layer connections with periodic boundary in z-direction
 */
@@ -150,12 +150,12 @@ void period()
       nn[la+3*nla] = ix + ((iy-1+ny)%ny)*nx + iz*layer_size; // down neighbor
       
       // Inter-layer neighbors (2 neighbors in adjacent layers)
-      nn[la+4*nla] = layer_pos + ((iz+1)%4)*layer_size;     // layer above
-      nn[la+5*nla] = layer_pos + ((iz-1+4)%4)*layer_size;   // layer below
+      nn[la+4*nla] = layer_pos + ((iz+1)%3)*layer_size;     // layer above
+      nn[la+5*nla] = layer_pos + ((iz-1+3)%3)*layer_size;   // layer below
       
       // For n2 and n4 arrays (used for longer-range correlations)
-      n2[la] = layer_pos + ((iz+2)%4)*layer_size;            // half-way across 4 layers (2 layers away)
-      n4[la] = layer_pos + ((iz+1)%4)*layer_size;            // quarter-way across 4 layers (1 layer away)
+      n2[la] = layer_pos + ((iz+1)%3)*layer_size;            // next layer in 3-layer system
+      n4[la] = layer_pos + ((iz+2)%3)*layer_size;            // layer after next in 3-layer system
       n2[la+nla] = ((ix+nx/2)%nx) + iy*nx + iz*layer_size;   // half-way across x
       n4[la+nla] = ((ix+nx/4)%nx) + iy*nx + iz*layer_size;   // quarter-way across x
     }
