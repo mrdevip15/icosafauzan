@@ -4,6 +4,7 @@
 #include <float.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <time.h>
 
 void period();
 void mset();
@@ -14,15 +15,23 @@ void sineset();
 void mc();
 void metro();
 void single_clus();
+void hybrid_update();
+void init_histogram();
+void update_histogram(double energy);
+double analyze_histogram();
+int detect_two_peaks();
 
 extern void ranset(int, int []);
 extern void rnd(int [], int, int []);
 
 #define PI 3.141592653589793
-#define iqq 8
+#define iqq_cube 8
+#define iqq_ico 13  // 12 icosahedron vertices + 1 void state
+#define iqq iqq_ico  // Default to icosahedral model
 #define irbit 2281
 #define mask 017777777777
-#define update "wolff"
+#define update "hybrid"
+#define spin_model "icosahedral"  // "cube" or "icosahedral"
 
 int nx, ny, nla;  // Fixed at 3 layers
 
@@ -38,6 +47,21 @@ double *cosx, *sinx, *cosy, *siny;
 double beta;
 double fm[8];
 double fm_layer[3][8];  // thermodynamic quantities for each layer
+
+// First-order transition analysis variables
+#define HIST_SIZE 1000
+int energy_hist[HIST_SIZE];        // Energy histogram
+double e_min, e_max, de_hist;      // Energy histogram parameters
+double latent_heat;                // Latent heat for first-order transition
+int two_peak_detected;             // Flag for two-peak structure in histogram
+
+// Hybrid Monte Carlo algorithm parameters
+double metropolis_fraction;        // Fraction of updates that should be Metropolis
+int cluster_interval;              // Interval between cluster updates
+
+// Icosahedral model parameters
+double void_parameter_D;            // Parameter controlling void state density
+int current_spin_model;             // 0=cube, 1=icosahedral
 
 int *ir;
 int *irsd1;
@@ -60,10 +84,27 @@ int main() {
 
     printf("#%12d %12d %12d %12d %12d %12d\n", nx, ny, nz, nmcs1, nmcs2, iri);
     
-    // Create directory structure
-    sprintf(dirname, "simulation_runs/nx%d_ny%d", nx, ny);
+    // Create timestamped directory structure
+    time_t now = time(NULL);
+    struct tm *local_time = localtime(&now);
+    char timestamp[32];
+    sprintf(timestamp, "%04d%02d%02d_%02d%02d%02d", 
+            local_time->tm_year + 1900,
+            local_time->tm_mon + 1,
+            local_time->tm_mday,
+            local_time->tm_hour,
+            local_time->tm_min,
+            local_time->tm_sec);
+    
+    // Create hierarchical directory structure: simulation_runs/timestamp/lattice_size/
+    char base_dir[512], size_dir[512];
+    sprintf(base_dir, "simulation_runs/%s_%s_%s", timestamp, spin_model, update);
+    sprintf(size_dir, "%s/nx%d_ny%d", base_dir, nx, ny);
+    sprintf(dirname, "%s", size_dir);
+    
     mkdir("simulation_runs", 0755);
-    mkdir(dirname, 0755);
+    mkdir(base_dir, 0755);
+    mkdir(size_dir, 0755);
 
     // Dynamically allocate arrays
     isp = (int*)malloc(nla * sizeof(int));
@@ -96,14 +137,48 @@ int main() {
             printf("Error: Cannot create file %s\n", filename);
             return 1;
         }
+        // Write enhanced model metadata
+        fprintf(layer_files[layer], "# Enhanced Quasi-3D Monte Carlo Simulation\n");
+        fprintf(layer_files[layer], "# Timestamp: %s\n", timestamp);
+        fprintf(layer_files[layer], "# Spin model: %s (%d states)\n", spin_model, iqq);
+        fprintf(layer_files[layer], "# Algorithm: %s (hybrid Metropolis+Wolff)\n", update);
+        fprintf(layer_files[layer], "# Theoretical Tc (8-state Potts): ~0.751\n");
+        fprintf(layer_files[layer], "# Temperature range: 0.1-1.5 (optimized for critical region)\n");
+        fprintf(layer_files[layer], "# Layer: %d/3\n", layer+1);
+        fprintf(layer_files[layer], "# System size: %dx%dx3, Total sites: %d\n", nx, ny, nla);
+        if (current_spin_model == 1) {
+            fprintf(layer_files[layer], "# Void parameter D: %.3f\n", void_parameter_D);
+        }
+        fprintf(layer_files[layer], "#\n");
         fprintf(layer_files[layer], "#%12s %12s %12s %12s %12s %12s %12s %12s\n",
                 "Temperature", "M^2", "M^4", "G^2", "G^4", "Energy", "Cv", "Corr");
     }
 
+    // Updated temperature range based on 8-state Potts theory
+    // Theoretical Tc = 1/log(1+sqrt(8)) ≈ 0.751 for 8-state Potts model
+    // Focus on critical region with finer resolution near Tc
     for(itemp=1; itemp<=201; itemp++)
     {
-      temp=0.0+0.01*(itemp-1);
+      // Temperature range: 0.1 to 1.5 (avoiding T=0 singularity)
+      // Higher resolution near critical temperature
+      if (itemp <= 50) {
+        // Low temperature region: 0.1 to 0.5
+        temp = 0.1 + 0.008*(itemp-1);
+      } else if (itemp <= 150) {
+        // Critical region: 0.5 to 1.0 (fine resolution around Tc ≈ 0.751)
+        temp = 0.5 + 0.005*(itemp-50);
+      } else {
+        // High temperature region: 1.0 to 1.5
+        temp = 1.0 + 0.01*(itemp-150);
+      }
+      
       beta=1/temp;
+      
+      // Initialize histogram for first-order transition analysis
+      if (itemp == 1) {
+        init_histogram();
+      }
+      
       spinset();
 
       mc();  // This now fills fm_layer[layer][i] for each layer
@@ -144,6 +219,17 @@ int main() {
           
           fprintf(layer_files[layer], "%13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e\n",
                   temp,fm2,fm4,fg2,fg4,fe1,cv,corr);
+      }
+      
+      // First-order transition analysis
+      // Check for two-peak structure in energy distribution near critical temperature
+      if (temp >= 0.6 && temp <= 0.9) {  // Near theoretical Tc ≈ 0.751
+        two_peak_detected = detect_two_peaks();
+        if (two_peak_detected) {
+          latent_heat = analyze_histogram();
+          printf("# First-order transition detected at T=%.4f, Latent heat=%.6f\n", 
+                 temp, latent_heat);
+        }
       }
     }
     
@@ -200,35 +286,74 @@ void period()
 
 void mset()
 /*
-        set magnetization
-        cube
+        set magnetization vectors for cube or icosahedral spins
 */
 {
   int iq;
-  double invsqrt3 = 1.0/sqrt(3.0);
-
-  /* 8 vertices of a cube: (±1,±1,±1) normalized */
-  mx[0] = invsqrt3;  my[0] = invsqrt3;  mz[0] = invsqrt3;   /* (1,1,1) */
-  mx[1] = -invsqrt3; my[1] = invsqrt3;  mz[1] = invsqrt3;   /* (-1,1,1) */
-  mx[2] = -invsqrt3; my[2] = -invsqrt3; mz[2] = invsqrt3;   /* (-1,-1,1) */
-  mx[3] = invsqrt3;  my[3] = -invsqrt3; mz[3] = invsqrt3;   /* (1,-1,1) */
-  mx[4] = invsqrt3;  my[4] = invsqrt3;  mz[4] = -invsqrt3;  /* (1,1,-1) */
-  mx[5] = -invsqrt3; my[5] = invsqrt3;  mz[5] = -invsqrt3;  /* (-1,1,-1) */
-  mx[6] = -invsqrt3; my[6] = -invsqrt3; mz[6] = -invsqrt3;  /* (-1,-1,-1) */
-  mx[7] = invsqrt3;  my[7] = -invsqrt3; mz[7] = -invsqrt3;  /* (1,-1,-1) */
+  
+  // Initialize void parameter for icosahedral model
+  void_parameter_D = 0.5;  // Default value, can be adjusted
+  
+  if (strcmp(spin_model, "cube") == 0) {
+    // 8 vertices of a cube: (±1,±1,±1) normalized
+    current_spin_model = 0;
+    double invsqrt3 = 1.0/sqrt(3.0);
+    
+    mx[0] = invsqrt3;  my[0] = invsqrt3;  mz[0] = invsqrt3;   /* (1,1,1) */
+    mx[1] = -invsqrt3; my[1] = invsqrt3;  mz[1] = invsqrt3;   /* (-1,1,1) */
+    mx[2] = -invsqrt3; my[2] = -invsqrt3; mz[2] = invsqrt3;   /* (-1,-1,1) */
+    mx[3] = invsqrt3;  my[3] = -invsqrt3; mz[3] = invsqrt3;   /* (1,-1,1) */
+    mx[4] = invsqrt3;  my[4] = invsqrt3;  mz[4] = -invsqrt3;  /* (1,1,-1) */
+    mx[5] = -invsqrt3; my[5] = invsqrt3;  mz[5] = -invsqrt3;  /* (-1,1,-1) */
+    mx[6] = -invsqrt3; my[6] = -invsqrt3; mz[6] = -invsqrt3;  /* (-1,-1,-1) */
+    mx[7] = invsqrt3;  my[7] = -invsqrt3; mz[7] = -invsqrt3;  /* (1,-1,-1) */
+    
+  } else if (strcmp(spin_model, "icosahedral") == 0) {
+    // 12 vertices of icosahedron + 1 void state (0,0,0)
+    current_spin_model = 1;
+    double phi = (1.0 + sqrt(5.0)) / 2.0;  // Golden ratio
+    double norm = sqrt(1.0 + phi*phi);     // Normalization factor
+    
+    // 12 vertices of icosahedron (normalized)
+    mx[0] = 1.0/norm;     my[0] = phi/norm;   mz[0] = 0.0;
+    mx[1] = -1.0/norm;    my[1] = phi/norm;   mz[1] = 0.0;
+    mx[2] = 1.0/norm;     my[2] = -phi/norm;  mz[2] = 0.0;
+    mx[3] = -1.0/norm;    my[3] = -phi/norm;  mz[3] = 0.0;
+    
+    mx[4] = phi/norm;     my[4] = 0.0;       mz[4] = 1.0/norm;
+    mx[5] = phi/norm;     my[5] = 0.0;       mz[5] = -1.0/norm;
+    mx[6] = -phi/norm;    my[6] = 0.0;       mz[6] = 1.0/norm;
+    mx[7] = -phi/norm;    my[7] = 0.0;       mz[7] = -1.0/norm;
+    
+    mx[8] = 0.0;          my[8] = 1.0/norm;  mz[8] = phi/norm;
+    mx[9] = 0.0;          my[9] = -1.0/norm; mz[9] = phi/norm;
+    mx[10] = 0.0;         my[10] = 1.0/norm; mz[10] = -phi/norm;
+    mx[11] = 0.0;         my[11] = -1.0/norm;mz[11] = -phi/norm;
+    
+    // Void state (0,0,0)
+    mx[12] = 0.0;         my[12] = 0.0;      mz[12] = 0.0;
+  }
 }
 
 void eset()
 /*
-        rule for energy
+        rule for energy - supports both cube and icosahedral models
 */
 {
     int iq1,iq2;
 
     for (iq1=0; iq1 <= iqq-1; iq1++){
       for (iq2=0; iq2 <= iqq-1; iq2++){
-        rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2]
-                          + mz[iq1]*mz[iq2]);
+        if (current_spin_model == 1) { // Icosahedral model
+          // Handle void state interactions
+          if (iq1 == 12 || iq2 == 12) { // One spin is void state
+            rule[iq1][iq2] = void_parameter_D;  // Energy penalty for void state
+          } else {
+            rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2] + mz[iq1]*mz[iq2]);
+          }
+        } else { // Cube model
+          rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2] + mz[iq1]*mz[iq2]);
+        }
       }
     }
 }
@@ -335,10 +460,15 @@ void mc()
 
 /*   initialization  */
 
+  // Initialize hybrid algorithm parameters
+  metropolis_fraction = 0.7;  // 70% Metropolis, 30% cluster updates
+  cluster_interval = (int)(1.0 / (1.0 - metropolis_fraction));
+
   for (mcs=1; mcs <= nmcs1; mcs++){
 
       if(strcmp(update,"me")==0) { metro(); }
       if(strcmp(update,"wolff")==0) { single_clus(); }
+      if(strcmp(update,"hybrid")==0) { hybrid_update(); }
   }
 
 /*   measurement */
@@ -354,6 +484,7 @@ void mc()
 
       if(strcmp(update,"me")==0) { metro(); }
       if(strcmp(update,"wolff")==0) { single_clus(); }
+      if(strcmp(update,"hybrid")==0) { hybrid_update(); }
 
 /*  measurement of order parameter, energy - layer by layer */
 
@@ -473,6 +604,9 @@ void mc()
       
       fm[5] += fenergy;
       fm[6] += fenergy*fenergy;
+
+      // Update energy histogram for first-order transition analysis
+      update_histogram(fenergy);
 
       // Correlation calculations for each layer
       double clxc1_layer[3], clyc1_layer[3], clzc1_layer[3];
@@ -647,3 +781,133 @@ void single_clus()
     in ++;
   }                      // cluster still contains spins whose
  }                        // neighbors have not been tested
+
+// End of Wolff cluster update
+
+void hybrid_update()
+/*
+   Hybrid Monte Carlo update combining Metropolis and Wolff cluster algorithms
+   Based on research by Hasenbusch (2020) on icosahedral models
+*/
+{
+  static int update_counter = 0;
+  update_counter++;
+  
+  // Decide whether to use Metropolis or cluster update
+  // Use a deterministic pattern to ensure proper mixing
+  if (update_counter % cluster_interval == 0) {
+    // Cluster update (less frequent, more global changes)
+    single_clus();
+  } else {
+    // Metropolis update (more frequent, local changes)
+    // Perform multiple local updates to match cluster update efficiency
+    int local_updates = nla / 10;  // Number of local updates per step
+    for (int i = 0; i < local_updates; i++) {
+      metro();
+    }
+  }
+}
+
+// First-order transition analysis functions
+
+void init_histogram()
+/*
+   Initialize energy histogram for first-order transition detection
+*/
+{
+  int i;
+  
+  // Initialize histogram
+  for (i = 0; i < HIST_SIZE; i++) {
+    energy_hist[i] = 0;
+  }
+  
+  // Set energy range for histogram (rough estimates)
+  e_min = -3.0 * nla;  // Minimum possible energy
+  e_max = 0.0;         // Maximum possible energy (all spins random)
+  de_hist = (e_max - e_min) / HIST_SIZE;
+  
+  two_peak_detected = 0;
+  latent_heat = 0.0;
+}
+
+void update_histogram(double energy)
+/*
+   Update energy histogram with current energy value
+*/
+{
+  int bin;
+  
+  if (de_hist > 0) {
+    bin = (int)((energy - e_min) / de_hist);
+    if (bin >= 0 && bin < HIST_SIZE) {
+      energy_hist[bin]++;
+    }
+  }
+}
+
+int detect_two_peaks()
+/*
+   Detect two-peak structure in energy histogram (signature of first-order transition)
+   Returns 1 if two peaks detected, 0 otherwise
+*/
+{
+  int i, peak_count = 0;
+  int local_maxima[10];  // Store positions of local maxima
+  int threshold = nmcs2 / 100;  // Minimum height for a peak
+  
+  // Find local maxima
+  for (i = 1; i < HIST_SIZE - 1; i++) {
+    if (energy_hist[i] > energy_hist[i-1] && 
+        energy_hist[i] > energy_hist[i+1] && 
+        energy_hist[i] > threshold) {
+      if (peak_count < 10) {
+        local_maxima[peak_count] = i;
+        peak_count++;
+      }
+    }
+  }
+  
+  // Check if we have at least two significant peaks
+  if (peak_count >= 2) {
+    // Additional check: peaks should be separated by a minimum distance
+    int separation = local_maxima[1] - local_maxima[0];
+    if (separation > HIST_SIZE / 10) {  // Peaks should be well separated
+      return 1;
+    }
+  }
+  
+  return 0;
+}
+
+double analyze_histogram()
+/*
+   Analyze energy histogram to extract latent heat
+   Returns latent heat value
+*/
+{
+  int i, peak1 = -1, peak2 = -1;
+  int max1 = 0, max2 = 0;
+  
+  // Find two highest peaks
+  for (i = 0; i < HIST_SIZE; i++) {
+    if (energy_hist[i] > max1) {
+      max2 = max1;
+      peak2 = peak1;
+      max1 = energy_hist[i];
+      peak1 = i;
+    } else if (energy_hist[i] > max2) {
+      max2 = energy_hist[i];
+      peak2 = i;
+    }
+  }
+  
+  // Calculate latent heat as energy difference between peaks
+  if (peak1 >= 0 && peak2 >= 0) {
+    double e1 = e_min + peak1 * de_hist;
+    double e2 = e_min + peak2 * de_hist;
+    return fabs(e2 - e1) / nla;  // Per site latent heat
+  }
+  
+  return 0.0;
+}
