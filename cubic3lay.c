@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#include <sys/stat.h>
+#include <string.h>
 
 void period();
 void mset();
@@ -35,16 +37,19 @@ int nmcs1, nmcs2;
 double *cosx, *sinx, *cosy, *siny;
 double beta;
 double fm[8];
+double fm_layer[3][8];  // thermodynamic quantities for each layer
 
 int *ir;
 int *irsd1;
 
 int main() {
-    int iri, i, itemp;
+    int iri, i, itemp, layer;
     double fnla2, fnla4, temp;
     double fm2,fm4,fg2,fg4,fe1,fe2,cv;
     double ff,corr;
     int input_nx, input_ny;
+    char dirname[256], filename[256];
+    FILE *layer_files[3];
 
     // Read nx, ny, nmcs1, nmcs2, iri from input (fixed at 3 layers)
     scanf("%d %d %d %d %d", &nx, &ny, &nmcs1, &nmcs2, &iri);
@@ -54,6 +59,11 @@ int main() {
     fnla4 = fnla2 * fnla2;
 
     printf("#%12d %12d %12d %12d %12d %12d\n", nx, ny, nz, nmcs1, nmcs2, iri);
+    
+    // Create directory structure
+    sprintf(dirname, "simulation_runs/nx%d_ny%d", nx, ny);
+    mkdir("simulation_runs", 0755);
+    mkdir(dirname, 0755);
 
     // Dynamically allocate arrays
     isp = (int*)malloc(nla * sizeof(int));
@@ -78,45 +88,72 @@ int main() {
     rset();
     sineset();
 
+    // Open output files for each layer
+    for(layer=0; layer<3; layer++) {
+        sprintf(filename, "%s/layer_%d.txt", dirname, layer+1);
+        layer_files[layer] = fopen(filename, "w");
+        if (layer_files[layer] == NULL) {
+            printf("Error: Cannot create file %s\n", filename);
+            return 1;
+        }
+        fprintf(layer_files[layer], "#%12s %12s %12s %12s %12s %12s %12s %12s\n",
+                "Temperature", "M^2", "M^4", "G^2", "G^4", "Energy", "Cv", "Corr");
+    }
+
     for(itemp=1; itemp<=201; itemp++)
     {
       temp=0.0+0.01*(itemp-1);
       beta=1/temp;
       spinset();
 
-      mc();
+      mc();  // This now fills fm_layer[layer][i] for each layer
 
-      fm2=fm[1]/fnla2;
-      fm4=fm[2]/fnla4;
-      fg2=fm[3]/nla;
-      fg4=fm[4]/nla;
-      fe1=fm[5]/nla;
-      fe2=fm[6]/fnla2;
-      cv =beta*beta*(fe2-fe1*fe1)*nla;
-      ff =fm[7]/fnla2;
-      
-      // Check for NaN or infinite values
-      if (isnan(fm2) || isinf(fm2)) fm2 = 0.0;
-      if (isnan(fm4) || isinf(fm4)) fm4 = 0.0;
-      if (isnan(fg2) || isinf(fg2)) fg2 = 0.0;
-      if (isnan(fg4) || isinf(fg4)) fg4 = 0.0;
-      if (isnan(fe1) || isinf(fe1)) fe1 = 0.0;
-      if (isnan(cv) || isinf(cv)) cv = 0.0;
-      if (isnan(ff) || isinf(ff)) ff = 0.0;
-      
-      // Safe correlation length calculation
-      double corr_arg = fm2/ff - 1.0;
-      double sin_term = 2.0*sin(PI/nx);
-      
-      if (ff > 1e-10 && corr_arg > 0.0 && sin_term > 1e-10) {
-        corr = sqrt(corr_arg) / sin_term;
-      } else {
-        corr = 0.0;  // Set to zero if calculation would be invalid
+      // Calculate and output thermodynamic properties for each layer
+      for(layer=0; layer<3; layer++) {
+          double layer_size = nx * ny;  // Sites per layer
+          double fnla2_layer = layer_size * layer_size;
+          double fnla4_layer = fnla2_layer * fnla2_layer;
+          
+          fm2=fm_layer[layer][1]/fnla2_layer;
+          fm4=fm_layer[layer][2]/fnla4_layer;
+          fg2=fm_layer[layer][3]/layer_size;
+          fg4=fm_layer[layer][4]/layer_size;
+          fe1=fm_layer[layer][5]/layer_size;
+          fe2=fm_layer[layer][6]/fnla2_layer;
+          cv =beta*beta*(fe2-fe1*fe1)*layer_size;
+          ff =fm_layer[layer][7]/fnla2_layer;
+          
+          // Check for NaN or infinite values
+          if (isnan(fm2) || isinf(fm2)) fm2 = 0.0;
+          if (isnan(fm4) || isinf(fm4)) fm4 = 0.0;
+          if (isnan(fg2) || isinf(fg2)) fg2 = 0.0;
+          if (isnan(fg4) || isinf(fg4)) fg4 = 0.0;
+          if (isnan(fe1) || isinf(fe1)) fe1 = 0.0;
+          if (isnan(cv) || isinf(cv)) cv = 0.0;
+          if (isnan(ff) || isinf(ff)) ff = 0.0;
+          
+          // Safe correlation length calculation
+          double corr_arg = fm2/ff - 1.0;
+          double sin_term = 2.0*sin(PI/nx);
+          
+          if (ff > 1e-10 && corr_arg > 0.0 && sin_term > 1e-10) {
+            corr = sqrt(corr_arg) / sin_term;
+          } else {
+            corr = 0.0;  // Set to zero if calculation would be invalid
+          }
+          
+          fprintf(layer_files[layer], "%13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e\n",
+                  temp,fm2,fm4,fg2,fg4,fe1,cv,corr);
       }
-      printf("%13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e\n",
-              temp,fm2,fm4,fg2,fg4,fe1,cv,corr);
+    }
+    
+    // Close layer files
+    for(layer=0; layer<3; layer++) {
+        fclose(layer_files[layer]);
     }
 
+    printf("Simulation completed. Layer data saved to %s/\n", dirname);
+    
     // Free allocated memory
     free(isp); free(nn); free(n2); free(n4);
     free(cosx); free(sinx); free(cosy); free(siny);
@@ -300,55 +337,107 @@ void mc()
 
   for (mcs=1; mcs <= nmcs1; mcs++){
 
-      if(update=="me") { metro(); }
-      if(update=="wolff") { single_clus(); }
+      if(strcmp(update,"me")==0) { metro(); }
+      if(strcmp(update,"wolff")==0) { single_clus(); }
   }
 
 /*   measurement */
 
   for(i=1; i<=7; i++){
     fm[i] = 0;
+    for(int layer=0; layer<3; layer++) {
+      fm_layer[layer][i] = 0;
+    }
   }
 
   for (mcs=1; mcs <= nmcs2; mcs++){
 
-      if(update=="me") { metro(); }
-      if(update=="wolff") { single_clus(); }
+      if(strcmp(update,"me")==0) { metro(); }
+      if(strcmp(update,"wolff")==0) { single_clus(); }
 
-/*  measurement of order parameter, energy */
+/*  measurement of order parameter, energy - layer by layer */
 
-      fmxsum=0;
-      fmysum=0;
-      fmzsum=0;
-      fm2xsum=0;
-      fm2ysum=0;
-      fm2zsum=0;
-      fm4xsum=0;
-      fm4ysum=0;
-      fm4zsum=0;
+      // Initialize sums for each layer
+      double fmxsum_layer[3], fmysum_layer[3], fmzsum_layer[3];
+      double fm2xsum_layer[3], fm2ysum_layer[3], fm2zsum_layer[3];
+      double fm4xsum_layer[3], fm4ysum_layer[3], fm4zsum_layer[3];
+      
+      for(int layer=0; layer<3; layer++) {
+        fmxsum_layer[layer] = 0; fmysum_layer[layer] = 0; fmzsum_layer[layer] = 0;
+        fm2xsum_layer[layer] = 0; fm2ysum_layer[layer] = 0; fm2zsum_layer[layer] = 0;
+        fm4xsum_layer[layer] = 0; fm4ysum_layer[layer] = 0; fm4zsum_layer[layer] = 0;
+      }
+      
+      // Overall system sums for backward compatibility
+      fmxsum=0; fmysum=0; fmzsum=0;
+      fm2xsum=0; fm2ysum=0; fm2zsum=0;
+      fm4xsum=0; fm4ysum=0; fm4zsum=0;
 
       for (la=0; la <= nla-1; la++){
+        int layer_size = nx * ny;
+        int current_layer = la / layer_size;  // Determine which layer this site belongs to
+        
         isp1=isp[la];
+        
+        // Add to layer-specific sums
+        fmxsum_layer[current_layer] += mx[isp1];
+        fmysum_layer[current_layer] += my[isp1];
+        fmzsum_layer[current_layer] += mz[isp1];
+        
+        // Add to overall sums
         fmxsum += mx[isp1];
         fmysum += my[isp1];
         fmzsum += mz[isp1];
+        
+        // Calculate correlations within layer and between layers
         isp2 = isp[n2[la]];
+        fm2xsum_layer[current_layer] += mx[isp1]*mx[isp2];
+        fm2ysum_layer[current_layer] += my[isp1]*my[isp2];
+        fm2zsum_layer[current_layer] += mz[isp1]*mz[isp2];
         fm2xsum += mx[isp1]*mx[isp2];
         fm2ysum += my[isp1]*my[isp2];
         fm2zsum += mz[isp1]*mz[isp2];
+        
         isp2 = isp[n2[la+nla]];
+        fm2xsum_layer[current_layer] += mx[isp1]*mx[isp2];
+        fm2ysum_layer[current_layer] += my[isp1]*my[isp2];
+        fm2zsum_layer[current_layer] += mz[isp1]*mz[isp2];
         fm2xsum += mx[isp1]*mx[isp2];
         fm2ysum += my[isp1]*my[isp2];
         fm2zsum += mz[isp1]*mz[isp2];
+        
         isp2 = isp[n4[la]];
+        fm4xsum_layer[current_layer] += mx[isp1]*mx[isp2];
+        fm4ysum_layer[current_layer] += my[isp1]*my[isp2];
+        fm4zsum_layer[current_layer] += mz[isp1]*mz[isp2];
         fm4xsum += mx[isp1]*mx[isp2];
         fm4ysum += my[isp1]*my[isp2];
         fm4zsum += mz[isp1]*mz[isp2];
+        
         isp2 = isp[n4[la+nla]];
+        fm4xsum_layer[current_layer] += mx[isp1]*mx[isp2];
+        fm4ysum_layer[current_layer] += my[isp1]*my[isp2];
+        fm4zsum_layer[current_layer] += mz[isp1]*mz[isp2];
         fm4xsum += mx[isp1]*mx[isp2];
         fm4ysum += my[isp1]*my[isp2];
         fm4zsum += mz[isp1]*mz[isp2];
       }
+      
+      // Calculate order parameters for each layer
+      for(int layer=0; layer<3; layer++) {
+        double f2order_layer = (fmxsum_layer[layer]*fmxsum_layer[layer] + 
+                               fmysum_layer[layer]*fmysum_layer[layer] + 
+                               fmzsum_layer[layer]*fmzsum_layer[layer]);
+        double g2order_layer = (fm2xsum_layer[layer] + fm2ysum_layer[layer] + fm2zsum_layer[layer]);
+        double g4order_layer = (fm4xsum_layer[layer] + fm4ysum_layer[layer] + fm4zsum_layer[layer]);
+        
+        fm_layer[layer][1] += f2order_layer;
+        fm_layer[layer][2] += f2order_layer*f2order_layer;
+        fm_layer[layer][3] += g2order_layer/2;
+        fm_layer[layer][4] += g4order_layer/2;
+      }
+      
+      // Overall system calculations for backward compatibility
       f2order=(fmxsum*fmxsum+fmysum*fmysum+fmzsum*fmzsum);
       g2order=(fm2xsum+fm2ysum+fm2zsum);
       g4order=(fm4xsum+fm4ysum+fm4zsum);
@@ -358,32 +447,73 @@ void mc()
       fm[3] += g2order/2;
       fm[4] += g4order/2;
 
+      // Energy calculation for each layer
+      double fenergy_layer[3] = {0, 0, 0};
       fenergy=0;
+      
       for (la=0; la <= nla-1; la++){
+        int layer_size = nx * ny;
+        int current_layer = la / layer_size;
+        
         isp1=isp[la];
-        fenergy += rule[isp1][isp[nn[la]]]
-                 + rule[isp1][isp[nn[la+2*nla]]]
-                 + rule[isp1][isp[nn[la+4*nla]]]
-                 + rule[isp1][isp[nn[la+5*nla]]];
+        double site_energy = rule[isp1][isp[nn[la]]]
+                           + rule[isp1][isp[nn[la+2*nla]]]
+                           + rule[isp1][isp[nn[la+4*nla]]]
+                           + rule[isp1][isp[nn[la+5*nla]]];
+        
+        fenergy_layer[current_layer] += site_energy;
+        fenergy += site_energy;
       }
+      
+      // Store energy data for each layer
+      for(int layer=0; layer<3; layer++) {
+        fm_layer[layer][5] += fenergy_layer[layer];
+        fm_layer[layer][6] += fenergy_layer[layer]*fenergy_layer[layer];
+      }
+      
       fm[5] += fenergy;
       fm[6] += fenergy*fenergy;
 
-      clxc1 = 0;
-      clyc1 = 0;
-      clzc1 = 0;
-      clxs1 = 0;
-      clys1 = 0;
-      clzs1 = 0;
-      clxc2 = 0;
-      clyc2 = 0;
-      clzc2 = 0;
-      clxs2 = 0;
-      clys2 = 0;
-      clzs2 = 0;
+      // Correlation calculations for each layer
+      double clxc1_layer[3], clyc1_layer[3], clzc1_layer[3];
+      double clxs1_layer[3], clys1_layer[3], clzs1_layer[3];
+      double clxc2_layer[3], clyc2_layer[3], clzc2_layer[3];
+      double clxs2_layer[3], clys2_layer[3], clzs2_layer[3];
+      
+      for(int layer=0; layer<3; layer++) {
+        clxc1_layer[layer] = 0; clyc1_layer[layer] = 0; clzc1_layer[layer] = 0;
+        clxs1_layer[layer] = 0; clys1_layer[layer] = 0; clzs1_layer[layer] = 0;
+        clxc2_layer[layer] = 0; clyc2_layer[layer] = 0; clzc2_layer[layer] = 0;
+        clxs2_layer[layer] = 0; clys2_layer[layer] = 0; clzs2_layer[layer] = 0;
+      }
+      
+      clxc1 = 0; clyc1 = 0; clzc1 = 0;
+      clxs1 = 0; clys1 = 0; clzs1 = 0;
+      clxc2 = 0; clyc2 = 0; clzc2 = 0;
+      clxs2 = 0; clys2 = 0; clzs2 = 0;
 
       for (la=0; la <= nla-1; la++){
+        int layer_size = nx * ny;
+        int current_layer = la / layer_size;
+        int layer_pos = la % layer_size;
+        
         isp1 = isp[la];
+        
+        // Layer-specific calculations
+        clxc1_layer[current_layer] += mx[isp1]*cosx[layer_pos%nx];
+        clyc1_layer[current_layer] += my[isp1]*cosx[layer_pos%nx];
+        clzc1_layer[current_layer] += mz[isp1]*cosx[layer_pos%nx];
+        clxs1_layer[current_layer] += mx[isp1]*sinx[layer_pos%nx];
+        clys1_layer[current_layer] += my[isp1]*sinx[layer_pos%nx];
+        clzs1_layer[current_layer] += mz[isp1]*sinx[layer_pos%nx];
+        clxc2_layer[current_layer] += mx[isp1]*cosx[layer_pos/nx];
+        clyc2_layer[current_layer] += my[isp1]*cosx[layer_pos/nx];
+        clzc2_layer[current_layer] += mz[isp1]*cosx[layer_pos/nx];
+        clxs2_layer[current_layer] += mx[isp1]*sinx[layer_pos/nx];
+        clys2_layer[current_layer] += my[isp1]*sinx[layer_pos/nx];
+        clzs2_layer[current_layer] += mz[isp1]*sinx[layer_pos/nx];
+        
+        // Overall system calculations
         clxc1 += mx[isp1]*cosx[la%nx];
         clyc1 += my[isp1]*cosx[la%nx];
         clzc1 += mz[isp1]*cosx[la%nx];
@@ -396,6 +526,16 @@ void mc()
         clxs2 += mx[isp1]*sinx[la/nx];
         clys2 += my[isp1]*sinx[la/nx];
         clzs2 += mz[isp1]*sinx[la/nx];
+      }
+      
+      // Calculate correlation function for each layer
+      for(int layer=0; layer<3; layer++) {
+        double cl_layer = clxc1_layer[layer]*clxc1_layer[layer] + clyc1_layer[layer]*clyc1_layer[layer] + clzc1_layer[layer]*clzc1_layer[layer]
+                        + clxs1_layer[layer]*clxs1_layer[layer] + clys1_layer[layer]*clys1_layer[layer] + clzs1_layer[layer]*clzs1_layer[layer]
+                        + clxc2_layer[layer]*clxc2_layer[layer] + clyc2_layer[layer]*clyc2_layer[layer] + clzc2_layer[layer]*clzc2_layer[layer]
+                        + clxs2_layer[layer]*clxs2_layer[layer] + clys2_layer[layer]*clys2_layer[layer] + clzs2_layer[layer]*clzs2_layer[layer];
+        cl_layer /= 4;
+        fm_layer[layer][7] += cl_layer;
       }
 
       cl = clxc1*clxc1+clyc1*clyc1+clzc1*clzc1
@@ -410,6 +550,9 @@ void mc()
 
   for(i=1; i<=7; i++){
     fm[i] /= nmcs2;
+    for(int layer=0; layer<3; layer++) {
+      fm_layer[layer][i] /= nmcs2;
+    }
   }
 }
 
