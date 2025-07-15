@@ -3,7 +3,7 @@
 Python runner for the enhanced cubic3lay Monte Carlo simulation.
 Features:
 - Enhanced 8-state Potts theory with optimized temperature range
-- Icosahedral spin model (13 states) with void parameter
+- Cube spin model (8 states - cube vertices)
 - Hybrid Monte Carlo algorithm (Metropolis + Wolff clusters)
 - First-order transition detection
 - Timestamped hierarchical directory structure
@@ -150,7 +150,7 @@ def plot_results(results, output_dir):
     
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     fig.suptitle('Enhanced Quasi-3D Monte Carlo Simulation Results\n'
-                 'Icosahedral Spins (13-state) with Hybrid Algorithm', fontsize=16, fontweight='bold')
+                 'Cube Spins (8-state) with Hybrid Algorithm', fontsize=16, fontweight='bold')
     
     layer_colors = ['#e41a1c', '#377eb8', '#4daf4a']
     layer_names = ['Layer 1', 'Layer 2', 'Layer 3']
@@ -297,7 +297,7 @@ def print_summary(results, output_dir):
     
     print(f"\nKey Enhancements:")
     print(f"  ✓ Optimized temperature range for 8-state Potts critical region")
-    print(f"  ✓ Icosahedral spin model (13 states vs 8 cube states)")
+    print(f"  ✓ Cube spin model (8 states - cube vertices)")
     print(f"  ✓ Hybrid Monte Carlo algorithm (Metropolis + Wolff)")
     print(f"  ✓ First-order transition detection capabilities")
     print(f"  ✓ Timestamped hierarchical output structure")
@@ -309,7 +309,7 @@ def main():
     print("="*60)
     print("Features:")
     print("- 8-state Potts theory with optimized temperature range")
-    print("- Icosahedral spin model (13 states with void parameter)")
+    print("- Cube spin model (8 states - cube vertices)")
     print("- Hybrid Monte Carlo algorithm (70% Metropolis + 30% Wolff)")
     print("- First-order transition detection and histogram analysis")
     print("- Timestamped hierarchical directory structure")

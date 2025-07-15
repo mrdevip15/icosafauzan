@@ -25,13 +25,11 @@ extern void ranset(int, int []);
 extern void rnd(int [], int, int []);
 
 #define PI 3.141592653589793
-#define iqq_cube 8
-#define iqq_ico 13  // 12 icosahedron vertices + 1 void state
-#define iqq iqq_ico  // Default to icosahedral model
+#define iqq 8  // 8-state cube spins (vertices of a cube)
 #define irbit 2281
 #define mask 017777777777
 #define update "hybrid"
-#define spin_model "icosahedral"  // "cube" or "icosahedral"
+#define spin_model "cube"  // Using cube spin model
 
 int nx, ny, nla;  // Fixed at 3 layers
 
@@ -59,9 +57,8 @@ int two_peak_detected;             // Flag for two-peak structure in histogram
 double metropolis_fraction;        // Fraction of updates that should be Metropolis
 int cluster_interval;              // Interval between cluster updates
 
-// Icosahedral model parameters
-double void_parameter_D;            // Parameter controlling void state density
-int current_spin_model;             // 0=cube, 1=icosahedral
+// Cube model parameters
+int current_spin_model;             // Always 0 for cube model
 
 int *ir;
 int *irsd1;
@@ -140,15 +137,13 @@ int main() {
         // Write enhanced model metadata
         fprintf(layer_files[layer], "# Enhanced Quasi-3D Monte Carlo Simulation\n");
         fprintf(layer_files[layer], "# Timestamp: %s\n", timestamp);
-        fprintf(layer_files[layer], "# Spin model: %s (%d states)\n", spin_model, iqq);
+        fprintf(layer_files[layer], "# Spin model: %s (%d states - cube vertices)\n", spin_model, iqq);
         fprintf(layer_files[layer], "# Algorithm: %s (hybrid Metropolis+Wolff)\n", update);
         fprintf(layer_files[layer], "# Theoretical Tc (8-state Potts): ~0.751\n");
         fprintf(layer_files[layer], "# Temperature range: 0.1-1.5 (optimized for critical region)\n");
         fprintf(layer_files[layer], "# Layer: %d/3\n", layer+1);
         fprintf(layer_files[layer], "# System size: %dx%dx3, Total sites: %d\n", nx, ny, nla);
-        if (current_spin_model == 1) {
-            fprintf(layer_files[layer], "# Void parameter D: %.3f\n", void_parameter_D);
-        }
+        fprintf(layer_files[layer], "# Spin vectors: 8 cube vertices (±1,±1,±1)/√3\n");
         fprintf(layer_files[layer], "#\n");
         fprintf(layer_files[layer], "#%12s %12s %12s %12s %12s %12s %12s %12s\n",
                 "Temperature", "M^2", "M^4", "G^2", "G^4", "Energy", "Cv", "Corr");
@@ -286,74 +281,37 @@ void period()
 
 void mset()
 /*
-        set magnetization vectors for cube or icosahedral spins
+        set magnetization vectors for 8-state cube spins
+        8 vertices of a cube: (±1,±1,±1) normalized
 */
 {
   int iq;
+  double invsqrt3 = 1.0/sqrt(3.0);
   
-  // Initialize void parameter for icosahedral model
-  void_parameter_D = 0.5;  // Default value, can be adjusted
+  // Set spin model to cube
+  current_spin_model = 0;
   
-  if (strcmp(spin_model, "cube") == 0) {
-    // 8 vertices of a cube: (±1,±1,±1) normalized
-    current_spin_model = 0;
-    double invsqrt3 = 1.0/sqrt(3.0);
-    
-    mx[0] = invsqrt3;  my[0] = invsqrt3;  mz[0] = invsqrt3;   /* (1,1,1) */
-    mx[1] = -invsqrt3; my[1] = invsqrt3;  mz[1] = invsqrt3;   /* (-1,1,1) */
-    mx[2] = -invsqrt3; my[2] = -invsqrt3; mz[2] = invsqrt3;   /* (-1,-1,1) */
-    mx[3] = invsqrt3;  my[3] = -invsqrt3; mz[3] = invsqrt3;   /* (1,-1,1) */
-    mx[4] = invsqrt3;  my[4] = invsqrt3;  mz[4] = -invsqrt3;  /* (1,1,-1) */
-    mx[5] = -invsqrt3; my[5] = invsqrt3;  mz[5] = -invsqrt3;  /* (-1,1,-1) */
-    mx[6] = -invsqrt3; my[6] = -invsqrt3; mz[6] = -invsqrt3;  /* (-1,-1,-1) */
-    mx[7] = invsqrt3;  my[7] = -invsqrt3; mz[7] = -invsqrt3;  /* (1,-1,-1) */
-    
-  } else if (strcmp(spin_model, "icosahedral") == 0) {
-    // 12 vertices of icosahedron + 1 void state (0,0,0)
-    current_spin_model = 1;
-    double phi = (1.0 + sqrt(5.0)) / 2.0;  // Golden ratio
-    double norm = sqrt(1.0 + phi*phi);     // Normalization factor
-    
-    // 12 vertices of icosahedron (normalized)
-    mx[0] = 1.0/norm;     my[0] = phi/norm;   mz[0] = 0.0;
-    mx[1] = -1.0/norm;    my[1] = phi/norm;   mz[1] = 0.0;
-    mx[2] = 1.0/norm;     my[2] = -phi/norm;  mz[2] = 0.0;
-    mx[3] = -1.0/norm;    my[3] = -phi/norm;  mz[3] = 0.0;
-    
-    mx[4] = phi/norm;     my[4] = 0.0;       mz[4] = 1.0/norm;
-    mx[5] = phi/norm;     my[5] = 0.0;       mz[5] = -1.0/norm;
-    mx[6] = -phi/norm;    my[6] = 0.0;       mz[6] = 1.0/norm;
-    mx[7] = -phi/norm;    my[7] = 0.0;       mz[7] = -1.0/norm;
-    
-    mx[8] = 0.0;          my[8] = 1.0/norm;  mz[8] = phi/norm;
-    mx[9] = 0.0;          my[9] = -1.0/norm; mz[9] = phi/norm;
-    mx[10] = 0.0;         my[10] = 1.0/norm; mz[10] = -phi/norm;
-    mx[11] = 0.0;         my[11] = -1.0/norm;mz[11] = -phi/norm;
-    
-    // Void state (0,0,0)
-    mx[12] = 0.0;         my[12] = 0.0;      mz[12] = 0.0;
-  }
+  /* 8 vertices of a cube: (±1,±1,±1) normalized */
+  mx[0] = invsqrt3;  my[0] = invsqrt3;  mz[0] = invsqrt3;   /* (1,1,1) */
+  mx[1] = -invsqrt3; my[1] = invsqrt3;  mz[1] = invsqrt3;   /* (-1,1,1) */
+  mx[2] = -invsqrt3; my[2] = -invsqrt3; mz[2] = invsqrt3;   /* (-1,-1,1) */
+  mx[3] = invsqrt3;  my[3] = -invsqrt3; mz[3] = invsqrt3;   /* (1,-1,1) */
+  mx[4] = invsqrt3;  my[4] = invsqrt3;  mz[4] = -invsqrt3;  /* (1,1,-1) */
+  mx[5] = -invsqrt3; my[5] = invsqrt3;  mz[5] = -invsqrt3;  /* (-1,1,-1) */
+  mx[6] = -invsqrt3; my[6] = -invsqrt3; mz[6] = -invsqrt3;  /* (-1,-1,-1) */
+  mx[7] = invsqrt3;  my[7] = -invsqrt3; mz[7] = -invsqrt3;  /* (1,-1,-1) */
 }
 
 void eset()
 /*
-        rule for energy - supports both cube and icosahedral models
+        rule for energy - 8-state cube model
 */
 {
     int iq1,iq2;
 
     for (iq1=0; iq1 <= iqq-1; iq1++){
       for (iq2=0; iq2 <= iqq-1; iq2++){
-        if (current_spin_model == 1) { // Icosahedral model
-          // Handle void state interactions
-          if (iq1 == 12 || iq2 == 12) { // One spin is void state
-            rule[iq1][iq2] = void_parameter_D;  // Energy penalty for void state
-          } else {
-            rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2] + mz[iq1]*mz[iq2]);
-          }
-        } else { // Cube model
-          rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2] + mz[iq1]*mz[iq2]);
-        }
+        rule[iq1][iq2] = - (mx[iq1]*mx[iq2] + my[iq1]*my[iq2] + mz[iq1]*mz[iq2]);
       }
     }
 }
