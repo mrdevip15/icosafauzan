@@ -2,7 +2,13 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(dir) _mkdir(dir)
+#else
 #include <sys/stat.h>
+#define MKDIR(dir) mkdir(dir, 0755)
+#endif
 #include <string.h>
 #include <time.h>
 
@@ -15,11 +21,6 @@ void sineset();
 void mc();
 void metro();
 void single_clus();
-void hybrid_update();
-void init_histogram();
-void update_histogram(double energy);
-double analyze_histogram();
-int detect_two_peaks();
 
 extern void ranset(int, int []);
 extern void rnd(int [], int, int []);
@@ -28,7 +29,7 @@ extern void rnd(int [], int, int []);
 #define iqq 8  // 8-state cube spins (vertices of a cube)
 #define irbit 2281
 #define mask 017777777777
-#define update "hybrid"
+#define update "wolff"  // Changed from "hybrid" to "wolff"
 #define spin_model "cube"  // Using cube spin model
 
 int nx, ny, nla;  // Fixed at 3 layers
@@ -45,20 +46,6 @@ double *cosx, *sinx, *cosy, *siny;
 double beta;
 double fm[8];
 double fm_layer[3][8];  // thermodynamic quantities for each layer
-
-// First-order transition analysis variables
-#define HIST_SIZE 1000
-int energy_hist[HIST_SIZE];        // Energy histogram
-double e_min, e_max, de_hist;      // Energy histogram parameters
-double latent_heat;                // Latent heat for first-order transition
-int two_peak_detected;             // Flag for two-peak structure in histogram
-
-// Hybrid Monte Carlo algorithm parameters
-double metropolis_fraction;        // Fraction of updates that should be Metropolis
-int cluster_interval;              // Interval between cluster updates
-
-// Cube model parameters
-int current_spin_model;             // Always 0 for cube model
 
 int *ir;
 int *irsd1;
@@ -99,9 +86,9 @@ int main() {
     sprintf(size_dir, "%s/nx%d_ny%d", base_dir, nx, ny);
     sprintf(dirname, "%s", size_dir);
     
-    mkdir("simulation_runs", 0755);
-    mkdir(base_dir, 0755);
-    mkdir(size_dir, 0755);
+    MKDIR("simulation_runs");
+    MKDIR(base_dir);
+    MKDIR(size_dir);
 
     // Dynamically allocate arrays
     isp = (int*)malloc(nla * sizeof(int));
@@ -138,7 +125,7 @@ int main() {
         fprintf(layer_files[layer], "# Enhanced Quasi-3D Monte Carlo Simulation\n");
         fprintf(layer_files[layer], "# Timestamp: %s\n", timestamp);
         fprintf(layer_files[layer], "# Spin model: %s (%d states - cube vertices)\n", spin_model, iqq);
-        fprintf(layer_files[layer], "# Algorithm: %s (hybrid Metropolis+Wolff)\n", update);
+        fprintf(layer_files[layer], "# Algorithm: %s\n", update);
         fprintf(layer_files[layer], "# Theoretical Tc (8-state Potts): ~0.751\n");
         fprintf(layer_files[layer], "# Temperature range: 0.1-1.5 (optimized for critical region)\n");
         fprintf(layer_files[layer], "# Layer: %d/3\n", layer+1);
@@ -149,30 +136,13 @@ int main() {
                 "Temperature", "M^2", "M^4", "G^2", "G^4", "Energy", "Cv", "Corr");
     }
 
-    // Updated temperature range based on 8-state Potts theory
-    // Theoretical Tc = 1/log(1+sqrt(8)) ≈ 0.751 for 8-state Potts model
-    // Focus on critical region with finer resolution near Tc
+    // Temperature range: 0.5 to 2.5 with uniform step size
     for(itemp=1; itemp<=201; itemp++)
     {
-      // Temperature range: 0.1 to 1.5 (avoiding T=0 singularity)
-      // Higher resolution near critical temperature
-      if (itemp <= 50) {
-        // Low temperature region: 0.1 to 0.5
-        temp = 0.1 + 0.008*(itemp-1);
-      } else if (itemp <= 150) {
-        // Critical region: 0.5 to 1.0 (fine resolution around Tc ≈ 0.751)
-        temp = 0.5 + 0.005*(itemp-50);
-      } else {
-        // High temperature region: 1.0 to 1.5
-        temp = 1.0 + 0.01*(itemp-150);
-      }
+      // Uniform step size of 0.01 from 0.5 to 2.5
+      temp = 0.5 + 0.01*(itemp-1);
       
       beta=1/temp;
-      
-      // Initialize histogram for first-order transition analysis
-      if (itemp == 1) {
-        init_histogram();
-      }
       
       spinset();
 
@@ -214,17 +184,6 @@ int main() {
           
           fprintf(layer_files[layer], "%13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e %13.6e\n",
                   temp,fm2,fm4,fg2,fg4,fe1,cv,corr);
-      }
-      
-      // First-order transition analysis
-      // Check for two-peak structure in energy distribution near critical temperature
-      if (temp >= 0.6 && temp <= 0.9) {  // Near theoretical Tc ≈ 0.751
-        two_peak_detected = detect_two_peaks();
-        if (two_peak_detected) {
-          latent_heat = analyze_histogram();
-          printf("# First-order transition detected at T=%.4f, Latent heat=%.6f\n", 
-                 temp, latent_heat);
-        }
       }
     }
     
@@ -287,9 +246,6 @@ void mset()
 {
   int iq;
   double invsqrt3 = 1.0/sqrt(3.0);
-  
-  // Set spin model to cube
-  current_spin_model = 0;
   
   /* 8 vertices of a cube: (±1,±1,±1) normalized */
   mx[0] = invsqrt3;  my[0] = invsqrt3;  mz[0] = invsqrt3;   /* (1,1,1) */
@@ -404,7 +360,7 @@ void sineset()
 
 void mc()
 /*
-        monte carlo update
+        monte carlo update - now using only Wolff algorithm for speed
 */
 {
   int mcs, i, iq;
@@ -415,234 +371,130 @@ void mc()
   double clxc1, clyc1, clzc1, clxs1, clys1, clzs1;
   double clxc2, clyc2, clzc2, clxs2, clys2, clzs2;
   double cl;
+  int layer;
 
 /*   initialization  */
-
-  // Initialize hybrid algorithm parameters
-  metropolis_fraction = 0.7;  // 70% Metropolis, 30% cluster updates
-  cluster_interval = (int)(1.0 / (1.0 - metropolis_fraction));
-
-  for (mcs=1; mcs <= nmcs1; mcs++){
-
-      if(strcmp(update,"me")==0) { metro(); }
-      if(strcmp(update,"wolff")==0) { single_clus(); }
-      if(strcmp(update,"hybrid")==0) { hybrid_update(); }
-  }
-
-/*   measurement */
-
-  for(i=1; i<=7; i++){
-    fm[i] = 0;
-    for(int layer=0; layer<3; layer++) {
+  for(layer=0; layer<3; layer++) {
+    for(i=1; i<=7; i++) {
       fm_layer[layer][i] = 0;
     }
   }
 
-  for (mcs=1; mcs <= nmcs2; mcs++){
-
-      if(strcmp(update,"me")==0) { metro(); }
-      if(strcmp(update,"wolff")==0) { single_clus(); }
-      if(strcmp(update,"hybrid")==0) { hybrid_update(); }
-
-/*  measurement of order parameter, energy - layer by layer */
-
-      // Initialize sums for each layer
-      double fmxsum_layer[3], fmysum_layer[3], fmzsum_layer[3];
-      double fm2xsum_layer[3], fm2ysum_layer[3], fm2zsum_layer[3];
-      double fm4xsum_layer[3], fm4ysum_layer[3], fm4zsum_layer[3];
-      
-      for(int layer=0; layer<3; layer++) {
-        fmxsum_layer[layer] = 0; fmysum_layer[layer] = 0; fmzsum_layer[layer] = 0;
-        fm2xsum_layer[layer] = 0; fm2ysum_layer[layer] = 0; fm2zsum_layer[layer] = 0;
-        fm4xsum_layer[layer] = 0; fm4ysum_layer[layer] = 0; fm4zsum_layer[layer] = 0;
-      }
-      
-      // Overall system sums for backward compatibility
-      fmxsum=0; fmysum=0; fmzsum=0;
-      fm2xsum=0; fm2ysum=0; fm2zsum=0;
-      fm4xsum=0; fm4ysum=0; fm4zsum=0;
-
-      for (la=0; la <= nla-1; la++){
-        int layer_size = nx * ny;
-        int current_layer = la / layer_size;  // Determine which layer this site belongs to
-        
-        isp1=isp[la];
-        
-        // Add to layer-specific sums
-        fmxsum_layer[current_layer] += mx[isp1];
-        fmysum_layer[current_layer] += my[isp1];
-        fmzsum_layer[current_layer] += mz[isp1];
-        
-        // Add to overall sums
-        fmxsum += mx[isp1];
-        fmysum += my[isp1];
-        fmzsum += mz[isp1];
-        
-        // Calculate correlations within layer and between layers
-        isp2 = isp[n2[la]];
-        fm2xsum_layer[current_layer] += mx[isp1]*mx[isp2];
-        fm2ysum_layer[current_layer] += my[isp1]*my[isp2];
-        fm2zsum_layer[current_layer] += mz[isp1]*mz[isp2];
-        fm2xsum += mx[isp1]*mx[isp2];
-        fm2ysum += my[isp1]*my[isp2];
-        fm2zsum += mz[isp1]*mz[isp2];
-        
-        isp2 = isp[n2[la+nla]];
-        fm2xsum_layer[current_layer] += mx[isp1]*mx[isp2];
-        fm2ysum_layer[current_layer] += my[isp1]*my[isp2];
-        fm2zsum_layer[current_layer] += mz[isp1]*mz[isp2];
-        fm2xsum += mx[isp1]*mx[isp2];
-        fm2ysum += my[isp1]*my[isp2];
-        fm2zsum += mz[isp1]*mz[isp2];
-        
-        isp2 = isp[n4[la]];
-        fm4xsum_layer[current_layer] += mx[isp1]*mx[isp2];
-        fm4ysum_layer[current_layer] += my[isp1]*my[isp2];
-        fm4zsum_layer[current_layer] += mz[isp1]*mz[isp2];
-        fm4xsum += mx[isp1]*mx[isp2];
-        fm4ysum += my[isp1]*my[isp2];
-        fm4zsum += mz[isp1]*mz[isp2];
-        
-        isp2 = isp[n4[la+nla]];
-        fm4xsum_layer[current_layer] += mx[isp1]*mx[isp2];
-        fm4ysum_layer[current_layer] += my[isp1]*my[isp2];
-        fm4zsum_layer[current_layer] += mz[isp1]*mz[isp2];
-        fm4xsum += mx[isp1]*mx[isp2];
-        fm4ysum += my[isp1]*my[isp2];
-        fm4zsum += mz[isp1]*mz[isp2];
-      }
-      
-      // Calculate order parameters for each layer
-      for(int layer=0; layer<3; layer++) {
-        double f2order_layer = (fmxsum_layer[layer]*fmxsum_layer[layer] + 
-                               fmysum_layer[layer]*fmysum_layer[layer] + 
-                               fmzsum_layer[layer]*fmzsum_layer[layer]);
-        double g2order_layer = (fm2xsum_layer[layer] + fm2ysum_layer[layer] + fm2zsum_layer[layer]);
-        double g4order_layer = (fm4xsum_layer[layer] + fm4ysum_layer[layer] + fm4zsum_layer[layer]);
-        
-        fm_layer[layer][1] += f2order_layer;
-        fm_layer[layer][2] += f2order_layer*f2order_layer;
-        fm_layer[layer][3] += g2order_layer/2;
-        fm_layer[layer][4] += g4order_layer/2;
-      }
-      
-      // Overall system calculations for backward compatibility
-      f2order=(fmxsum*fmxsum+fmysum*fmysum+fmzsum*fmzsum);
-      g2order=(fm2xsum+fm2ysum+fm2zsum);
-      g4order=(fm4xsum+fm4ysum+fm4zsum);
-
-      fm[1] += f2order;
-      fm[2] += f2order*f2order;
-      fm[3] += g2order/2;
-      fm[4] += g4order/2;
-
-      // Energy calculation for each layer
-      double fenergy_layer[3] = {0, 0, 0};
-      fenergy=0;
-      
-      for (la=0; la <= nla-1; la++){
-        int layer_size = nx * ny;
-        int current_layer = la / layer_size;
-        
-        isp1=isp[la];
-        double site_energy = rule[isp1][isp[nn[la]]]
-                           + rule[isp1][isp[nn[la+2*nla]]]
-                           + rule[isp1][isp[nn[la+4*nla]]]
-                           + rule[isp1][isp[nn[la+5*nla]]];
-        
-        fenergy_layer[current_layer] += site_energy;
-        fenergy += site_energy;
-      }
-      
-      // Store energy data for each layer
-      for(int layer=0; layer<3; layer++) {
-        fm_layer[layer][5] += fenergy_layer[layer];
-        fm_layer[layer][6] += fenergy_layer[layer]*fenergy_layer[layer];
-      }
-      
-      fm[5] += fenergy;
-      fm[6] += fenergy*fenergy;
-
-      // Update energy histogram for first-order transition analysis
-      update_histogram(fenergy);
-
-      // Correlation calculations for each layer
-      double clxc1_layer[3], clyc1_layer[3], clzc1_layer[3];
-      double clxs1_layer[3], clys1_layer[3], clzs1_layer[3];
-      double clxc2_layer[3], clyc2_layer[3], clzc2_layer[3];
-      double clxs2_layer[3], clys2_layer[3], clzs2_layer[3];
-      
-      for(int layer=0; layer<3; layer++) {
-        clxc1_layer[layer] = 0; clyc1_layer[layer] = 0; clzc1_layer[layer] = 0;
-        clxs1_layer[layer] = 0; clys1_layer[layer] = 0; clzs1_layer[layer] = 0;
-        clxc2_layer[layer] = 0; clyc2_layer[layer] = 0; clzc2_layer[layer] = 0;
-        clxs2_layer[layer] = 0; clys2_layer[layer] = 0; clzs2_layer[layer] = 0;
-      }
-      
-      clxc1 = 0; clyc1 = 0; clzc1 = 0;
-      clxs1 = 0; clys1 = 0; clzs1 = 0;
-      clxc2 = 0; clyc2 = 0; clzc2 = 0;
-      clxs2 = 0; clys2 = 0; clzs2 = 0;
-
-      for (la=0; la <= nla-1; la++){
-        int layer_size = nx * ny;
-        int current_layer = la / layer_size;
-        int layer_pos = la % layer_size;
-        
-        isp1 = isp[la];
-        
-        // Layer-specific calculations
-        clxc1_layer[current_layer] += mx[isp1]*cosx[layer_pos%nx];
-        clyc1_layer[current_layer] += my[isp1]*cosx[layer_pos%nx];
-        clzc1_layer[current_layer] += mz[isp1]*cosx[layer_pos%nx];
-        clxs1_layer[current_layer] += mx[isp1]*sinx[layer_pos%nx];
-        clys1_layer[current_layer] += my[isp1]*sinx[layer_pos%nx];
-        clzs1_layer[current_layer] += mz[isp1]*sinx[layer_pos%nx];
-        clxc2_layer[current_layer] += mx[isp1]*cosx[layer_pos/nx];
-        clyc2_layer[current_layer] += my[isp1]*cosx[layer_pos/nx];
-        clzc2_layer[current_layer] += mz[isp1]*cosx[layer_pos/nx];
-        clxs2_layer[current_layer] += mx[isp1]*sinx[layer_pos/nx];
-        clys2_layer[current_layer] += my[isp1]*sinx[layer_pos/nx];
-        clzs2_layer[current_layer] += mz[isp1]*sinx[layer_pos/nx];
-        
-        // Overall system calculations
-        clxc1 += mx[isp1]*cosx[la%nx];
-        clyc1 += my[isp1]*cosx[la%nx];
-        clzc1 += mz[isp1]*cosx[la%nx];
-        clxs1 += mx[isp1]*sinx[la%nx];
-        clys1 += my[isp1]*sinx[la%nx];
-        clzs1 += mz[isp1]*sinx[la%nx];
-        clxc2 += mx[isp1]*cosx[la/nx];
-        clyc2 += my[isp1]*cosx[la/nx];
-        clzc2 += mz[isp1]*cosx[la/nx];
-        clxs2 += mx[isp1]*sinx[la/nx];
-        clys2 += my[isp1]*sinx[la/nx];
-        clzs2 += mz[isp1]*sinx[la/nx];
-      }
-      
-      // Calculate correlation function for each layer
-      for(int layer=0; layer<3; layer++) {
-        double cl_layer = clxc1_layer[layer]*clxc1_layer[layer] + clyc1_layer[layer]*clyc1_layer[layer] + clzc1_layer[layer]*clzc1_layer[layer]
-                        + clxs1_layer[layer]*clxs1_layer[layer] + clys1_layer[layer]*clys1_layer[layer] + clzs1_layer[layer]*clzs1_layer[layer]
-                        + clxc2_layer[layer]*clxc2_layer[layer] + clyc2_layer[layer]*clyc2_layer[layer] + clzc2_layer[layer]*clzc2_layer[layer]
-                        + clxs2_layer[layer]*clxs2_layer[layer] + clys2_layer[layer]*clys2_layer[layer] + clzs2_layer[layer]*clzs2_layer[layer];
-        cl_layer /= 4;
-        fm_layer[layer][7] += cl_layer;
-      }
-
-      cl = clxc1*clxc1+clyc1*clyc1+clzc1*clzc1
-          +clxs1*clxs1+clys1*clys1+clzs1*clzs1
-          +clxc2*clxc2+clyc2*clyc2+clzc2*clzc2
-          +clxs2*clxs2+clys2*clys2+clzs2*clzs2;
-      cl /= 4;
-
-      fm[7] += cl;
+  for (mcs=1; mcs <= nmcs1; mcs++){
+      single_clus();  // Use only Wolff algorithm for equilibration
   }
 
+/*   measurement */
 
-  for(i=1; i<=7; i++){
-    fm[i] /= nmcs2;
-    for(int layer=0; layer<3; layer++) {
+  for (mcs=1; mcs <= nmcs2; mcs++){
+      single_clus();  // Use only Wolff algorithm for measurement
+
+/*  measurement of order parameter, energy for each layer */
+      for(layer=0; layer<3; layer++) {
+        int layer_size = nx * ny;
+        int layer_offset = layer * layer_size;
+        
+        fmxsum=0;
+        fmysum=0;
+        fmzsum=0;
+        fm2xsum=0;
+        fm2ysum=0;
+        fm2zsum=0;
+        fm4xsum=0;
+        fm4ysum=0;
+        fm4zsum=0;
+
+        for (la=0; la < layer_size; la++){
+          int global_la = la + layer_offset;
+          isp1=isp[global_la];
+          fmxsum += mx[isp1];
+          fmysum += my[isp1];
+          fmzsum += mz[isp1];
+          
+          // Calculate correlations within the same layer
+          int n2_la = n2[global_la+nla] % layer_size + layer_offset; // Keep in same layer
+          int n4_la = n4[global_la+nla] % layer_size + layer_offset; // Keep in same layer
+          
+          isp2 = isp[n2_la];
+          fm2xsum += mx[isp1]*mx[isp2];
+          fm2ysum += my[isp1]*my[isp2];
+          fm2zsum += mz[isp1]*mz[isp2];
+          
+          isp2 = isp[n4_la];
+          fm4xsum += mx[isp1]*mx[isp2];
+          fm4ysum += my[isp1]*my[isp2];
+          fm4zsum += mz[isp1]*mz[isp2];
+        }
+        
+        f2order=(fmxsum*fmxsum+fmysum*fmysum+fmzsum*fmzsum);
+        g2order=(fm2xsum+fm2ysum+fm2zsum);
+        g4order=(fm4xsum+fm4ysum+fm4zsum);
+
+        fm_layer[layer][1] += f2order;
+        fm_layer[layer][2] += f2order*f2order;
+        fm_layer[layer][3] += g2order/2;
+        fm_layer[layer][4] += g4order/2;
+
+        fenergy=0;
+        for (la=0; la < layer_size; la++){
+          int global_la = la + layer_offset;
+          isp1=isp[global_la];
+          
+          // Only count in-plane interactions for per-layer energy
+          fenergy += rule[isp1][isp[nn[global_la]]]
+                   + rule[isp1][isp[nn[global_la+nla]]]
+                   + rule[isp1][isp[nn[global_la+2*nla]]]
+                   + rule[isp1][isp[nn[global_la+3*nla]]];
+        }
+        fm_layer[layer][5] += fenergy;
+        fm_layer[layer][6] += fenergy*fenergy;
+
+        clxc1 = 0;
+        clyc1 = 0;
+        clzc1 = 0;
+        clxs1 = 0;
+        clys1 = 0;
+        clzs1 = 0;
+        clxc2 = 0;
+        clyc2 = 0;
+        clzc2 = 0;
+        clxs2 = 0;
+        clys2 = 0;
+        clzs2 = 0;
+
+        for (la=0; la < layer_size; la++){
+          int global_la = la + layer_offset;
+          isp1 = isp[global_la];
+          int x = la % nx;
+          int y = la / nx;
+          
+          clxc1 += mx[isp1]*cosx[x];
+          clyc1 += my[isp1]*cosx[x];
+          clzc1 += mz[isp1]*cosx[x];
+          clxs1 += mx[isp1]*sinx[x];
+          clys1 += my[isp1]*sinx[x];
+          clzs1 += mz[isp1]*sinx[x];
+          clxc2 += mx[isp1]*cosx[y];
+          clyc2 += my[isp1]*cosx[y];
+          clzc2 += mz[isp1]*cosx[y];
+          clxs2 += mx[isp1]*sinx[y];
+          clys2 += my[isp1]*sinx[y];
+          clzs2 += mz[isp1]*sinx[y];
+        }
+
+        cl = clxc1*clxc1+clyc1*clyc1+clzc1*clzc1
+            +clxs1*clxs1+clys1*clys1+clzs1*clzs1
+            +clxc2*clxc2+clyc2*clyc2+clzc2*clzc2
+            +clxs2*clxs2+clys2*clys2+clzs2*clzs2;
+        cl /= 4;
+
+        fm_layer[layer][7] += cl;
+      }
+  }
+
+  // Average over measurement steps
+  for(layer=0; layer<3; layer++) {
+    for(i=1; i<=7; i++){
       fm_layer[layer][i] /= nmcs2;
     }
   }
@@ -687,8 +539,20 @@ void single_clus()
 {
   int la, la1, i, in, ic, rchoice, isp1;
   double edif;
-  int mark[nla], next[nla];
+  int *mark, *next;  // Changed to pointers for dynamic allocation
   double boltz;
+
+  // Dynamically allocate arrays
+  mark = (int*)malloc(nla * sizeof(int));
+  next = (int*)malloc(nla * sizeof(int));
+  
+  // Check if memory allocation was successful
+  if (mark == NULL || next == NULL) {
+    printf("Error: Memory allocation failed in single_clus function\n");
+    if (mark != NULL) free(mark);
+    if (next != NULL) free(next);
+    return;
+  }
 
   rnd(ir,4*nla,irsd1);
   rchoice = ir[nla]%15;
@@ -738,134 +602,11 @@ void single_clus()
 
     in ++;
   }                      // cluster still contains spins whose
- }                        // neighbors have not been tested
+                         // neighbors have not been tested
+                         
+  // Free dynamically allocated memory
+  free(mark);
+  free(next);
+}
 
 // End of Wolff cluster update
-
-void hybrid_update()
-/*
-   Hybrid Monte Carlo update combining Metropolis and Wolff cluster algorithms
-   Based on research by Hasenbusch (2020) on icosahedral models
-*/
-{
-  static int update_counter = 0;
-  update_counter++;
-  
-  // Decide whether to use Metropolis or cluster update
-  // Use a deterministic pattern to ensure proper mixing
-  if (update_counter % cluster_interval == 0) {
-    // Cluster update (less frequent, more global changes)
-    single_clus();
-  } else {
-    // Metropolis update (more frequent, local changes)
-    // Perform multiple local updates to match cluster update efficiency
-    int local_updates = nla / 10;  // Number of local updates per step
-    for (int i = 0; i < local_updates; i++) {
-      metro();
-    }
-  }
-}
-
-// First-order transition analysis functions
-
-void init_histogram()
-/*
-   Initialize energy histogram for first-order transition detection
-*/
-{
-  int i;
-  
-  // Initialize histogram
-  for (i = 0; i < HIST_SIZE; i++) {
-    energy_hist[i] = 0;
-  }
-  
-  // Set energy range for histogram (rough estimates)
-  e_min = -3.0 * nla;  // Minimum possible energy
-  e_max = 0.0;         // Maximum possible energy (all spins random)
-  de_hist = (e_max - e_min) / HIST_SIZE;
-  
-  two_peak_detected = 0;
-  latent_heat = 0.0;
-}
-
-void update_histogram(double energy)
-/*
-   Update energy histogram with current energy value
-*/
-{
-  int bin;
-  
-  if (de_hist > 0) {
-    bin = (int)((energy - e_min) / de_hist);
-    if (bin >= 0 && bin < HIST_SIZE) {
-      energy_hist[bin]++;
-    }
-  }
-}
-
-int detect_two_peaks()
-/*
-   Detect two-peak structure in energy histogram (signature of first-order transition)
-   Returns 1 if two peaks detected, 0 otherwise
-*/
-{
-  int i, peak_count = 0;
-  int local_maxima[10];  // Store positions of local maxima
-  int threshold = nmcs2 / 100;  // Minimum height for a peak
-  
-  // Find local maxima
-  for (i = 1; i < HIST_SIZE - 1; i++) {
-    if (energy_hist[i] > energy_hist[i-1] && 
-        energy_hist[i] > energy_hist[i+1] && 
-        energy_hist[i] > threshold) {
-      if (peak_count < 10) {
-        local_maxima[peak_count] = i;
-        peak_count++;
-      }
-    }
-  }
-  
-  // Check if we have at least two significant peaks
-  if (peak_count >= 2) {
-    // Additional check: peaks should be separated by a minimum distance
-    int separation = local_maxima[1] - local_maxima[0];
-    if (separation > HIST_SIZE / 10) {  // Peaks should be well separated
-      return 1;
-    }
-  }
-  
-  return 0;
-}
-
-double analyze_histogram()
-/*
-   Analyze energy histogram to extract latent heat
-   Returns latent heat value
-*/
-{
-  int i, peak1 = -1, peak2 = -1;
-  int max1 = 0, max2 = 0;
-  
-  // Find two highest peaks
-  for (i = 0; i < HIST_SIZE; i++) {
-    if (energy_hist[i] > max1) {
-      max2 = max1;
-      peak2 = peak1;
-      max1 = energy_hist[i];
-      peak1 = i;
-    } else if (energy_hist[i] > max2) {
-      max2 = energy_hist[i];
-      peak2 = i;
-    }
-  }
-  
-  // Calculate latent heat as energy difference between peaks
-  if (peak1 >= 0 && peak2 >= 0) {
-    double e1 = e_min + peak1 * de_hist;
-    double e2 = e_min + peak2 * de_hist;
-    return fabs(e2 - e1) / nla;  // Per site latent heat
-  }
-  
-  return 0.0;
-}
